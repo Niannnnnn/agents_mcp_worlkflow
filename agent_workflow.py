@@ -5,7 +5,7 @@ from agents.mcp import MCPServer, MCPServerStdio
 import os
 from dotenv import load_dotenv
 from IPython.display import display, Code, Markdown, Image
-import requests, json
+import requests, json, re
 import os.path
 from typing import Dict, Any, List, Optional
 import asyncio
@@ -37,7 +37,7 @@ class TaskPlanner:
             model=model
         )
         
-    async def create_plan(self, user_query: str) -> list:
+    async def create_plan(self, user_query: str, feedback: Optional[str] = None) -> list:
         planning_prompt = f"""
         请分析以下用户请求，并将其分解为明确的按顺序执行的任务步骤：
         
@@ -66,6 +66,13 @@ class TaskPlanner:
         6. 重要: 不要在JSON中使用注释，如果参数为空则使用 {{}} 空对象
         """
         
+        # 如果有反馈，添加到规划提示中
+        if feedback:
+            planning_prompt += f"""
+            以下是上一轮执行的反馈，请据此调整新的执行计划：
+            {feedback}
+            """
+
         planning_input = [{"content": planning_prompt, "role": "user"}]
         plan_result = await Runner.run(self.planner_agent, planning_input)
         
@@ -139,7 +146,9 @@ class TaskPlanner:
             # 返回一个空计划
             return []
 
-async def run_agent_until_done(agent, input_items, tasks=None):
+
+
+async def run_agent_until_done(executor_agent, input_items, tasks=None):
     """按照规划执行任务，直到所有任务完成"""
     results = []
     
@@ -170,7 +179,7 @@ async def run_agent_until_done(agent, input_items, tasks=None):
             """, "role": "user"}]
             
             # 执行任务
-            result = await Runner.run(agent, task_input)
+            result = await Runner.run(executor_agent, task_input)
             
             # 保存结果
             results.append({
@@ -183,7 +192,7 @@ async def run_agent_until_done(agent, input_items, tasks=None):
             print(f"\033[92m✓ 完成任务: {task_desc}\033[0m")
     else:
         # 如果没有提供任务列表，则直接执行输入
-        result = await Runner.run(agent, input_items)
+        result = await Runner.run(executor_agent, input_items)
         results.append({
             "task_id": 1,
             "operation": "direct_execution",
@@ -194,12 +203,37 @@ async def run_agent_until_done(agent, input_items, tasks=None):
     # 返回所有结果的组合
     return results
 
-async def chat(mcp_servers: list[MCPServer]):
-    # 创建任务规划器
-    planner = TaskPlanner(deepseek_model)
+def parse_feedback_items(feedback):
+    for idx, item in enumerate(feedback.new_items):
+        print(f"--- New Item {idx} ---")
 
-    # 创建一个复合操作助手
-    agent = Agent(
+        # 专盯 New Item 1：包含 function_call_output 且含有 json 的 text
+        if idx == 1 and isinstance(item.raw_item, dict):
+            output_str = item.raw_item.get("output", "")
+            try:
+                # 提取 JSON 字符串里的 text
+                json_data = json.loads(output_str)
+                text_str = json_data.get("text", "")
+                
+                # 把嵌套的 JSON 字符串转成 dict
+                inner_data = json.loads(text_str)
+                
+                # 渲染输出
+                print(f"\n🧪 评估状态: {inner_data['status']}")
+                print(f"📝 总结信息: {inner_data['message']}")
+
+            except Exception as e:
+                print("⚠️ 解析出错啦：", e)
+        # else:
+        #     print(item.raw_item)
+        #     print("\n")
+
+async def chat(mcp_servers: list[MCPServer]):
+    # 创建规划智能体
+    planner_agent = TaskPlanner(deepseek_model)
+
+    # 创建一个执行智能体
+    executor_agent = Agent(
         name="ExecutorAgent", 
         instructions="""你是一个能够执行分子生成、分子对接、构象评估操作的分子设计工作流的助手。你可以：
         1. 执行分子生成操作
@@ -228,8 +262,23 @@ async def chat(mcp_servers: list[MCPServer]):
         mcp_servers=mcp_servers,
         model=deepseek_model
     )
+    # 创建一个反馈智能体
+    reflection_agent = Agent(
+        name="ExecutorAgent", 
+        instructions="""你是一个分子设计工作流的反馈分析专家，负责分析任务执行结果，提供优化建议和错误诊断。
+        你只需要使用molecule_reflection工具获取评估结果，并基于评估结果:
+        1. 对后续任务规划提供优化建议
+        
+        重要提示：在众多mcp_servers对应的工具中，你只需要使用molecule_reflection工具，你不会用到其他工具，请不要错误调用。
+
+        你的反馈将用于指导下一轮任务规划，帮助用户获得更好的分子设计结果。
+        """,
+        mcp_servers=mcp_servers,
+        model=deepseek_model
+    )
 
     input_items = []
+
     
     # 打印欢迎信息和使用提示
     print("\n====== 分子设计工作流助手 ======")
@@ -238,6 +287,7 @@ async def chat(mcp_servers: list[MCPServer]):
     print("2. 分子对接 - 使用adgpu或vina模式进行分子对接")
     print("3. 构象评估 - 进行构象合理性评估")
     print("4. 文件下载 - 下载执行操作的结果文件")
+    print("5. 结果反馈 - 分析执行结果并提供优化建议")
     print("\n您可以通过自然语言描述需要执行的任务，下面是一些示例：")
     
     # 定义示例提示，并用颜色高亮显示
@@ -255,6 +305,9 @@ async def chat(mcp_servers: list[MCPServer]):
     
     print("\n" + "="*35)
     
+    # 保存上一次反馈，用于改进后续规划
+    last_feedback = None
+
     while True:
         try:
             print("\n您可以输入需要执行的任务，或输入'help'查看帮助信息：")
@@ -271,6 +324,7 @@ async def chat(mcp_servers: list[MCPServer]):
                 print("- 分子对接: 指定配体SDF文件、受体PDB文件和对接模式(adgpu/vina)")
                 print("- 构象评估: 指定预测SDF文件、蛋白PDB文件和对接模式(adgpu/vina)")
                 print("- 完整工作流: 一步执行从分子生成到对接结果下载的全流程")
+                print("- 结果反馈: 分析执行结果并提供优化建议")
                 print("\n示例命令：")
                 for i, example in enumerate(examples):
                     print(f"\033[96m示例{i+1}: {example}\033[0m")
@@ -283,7 +337,7 @@ async def chat(mcp_servers: list[MCPServer]):
             print("\033[93m正在规划任务执行流程...\033[0m")
             
             # 创建执行计划
-            tasks = await planner.create_plan(user_input)
+            tasks = await planner_agent.create_plan(user_input, last_feedback)
             
             if tasks:
                 # 打印计划
@@ -292,7 +346,7 @@ async def chat(mcp_servers: list[MCPServer]):
                     print(f"\033[94m{idx+1}. {task['description']}\033[0m")
                 
                 # 按照计划执行任务
-                results = await run_agent_until_done(agent, input_items, tasks)
+                results = await run_agent_until_done(executor_agent, input_items, tasks)
                 
                 # 显示所有任务结果
                 print(f"\033[92m✅ 全部任务执行完成!\033[0m")
@@ -301,10 +355,29 @@ async def chat(mcp_servers: list[MCPServer]):
                 for result in results:
                     print(f"\n\033[94m[任务 {result['task_id']}] {result['description']}:\033[0m")
                     print(f"{result['result']}")
+
+                # 使用反馈智能体分析结果 - 不再传入执行结果，让它直接调用API
+                print("\n\033[93m正在分析执行结果...\033[0m")
+                feedback_input = [{"role": "user", "content": "feedback"}]
+                feedback = await Runner.run(reflection_agent, feedback_input)
+                last_feedback = feedback  # 保存反馈用于下一次规划
+                
+                # 显示反馈结果
+                print(f"\n\033[94m[执行反馈]:\033[0m")
+                # print(f"{feedback}")
+
+                # print("\n🔍 Exploring new items:\n")
+                # for idx, item in enumerate(feedback.new_items):
+                #     print(f"--- New Item {idx} ---")
+                #     print(item.raw_item)
+                #     print("\n")
+
+                parse_feedback_items(feedback)
+                
             else:
                 # 如果无法创建计划，直接执行单次任务
                 print("\033[93m无法创建明确的执行计划，将直接处理请求...\033[0m")
-                results = await run_agent_until_done(agent, input_items)
+                results = await run_agent_until_done(executor_agent, input_items)
                 
                 print(f"\033[92m✅ 执行完成!\033[0m")
                 if results and len(results) > 0:
@@ -336,8 +409,12 @@ async def mcp_run():
         name = "molecular_download_server",
         cache_tools_list = True,
         params = {"command": "uv", "args": ["run", "mol_download_server.py"]}
-    ) as mol_download_server:
-        await chat([mol_gen_server, docking_server, conf_eval_server, mol_download_server])
+    ) as mol_download_server, MCPServerStdio(
+        name = "molecular_reflection_server",
+        cache_tools_list = True,
+        params = {"command": "uv", "args": ["run", "mol_reflection_server.py"]}
+    ) as mol_reflection_server:
+        await chat([mol_gen_server, docking_server, conf_eval_server, mol_download_server, mol_reflection_server])
 
 if __name__ == '__main__':
     asyncio.run(mcp_run())
