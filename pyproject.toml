@@ -1,0 +1,15 @@
+[project]
+name = "mcp-client"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "agents>=1.4.0",
+    "httpx>=0.28.1",
+    "ipython>=8.35.0",
+    "mcp>=1.6.0",
+    "openai>=1.72.0",
+    "openai-agents>=0.0.9",
+    "python-dotenv>=1.1.0",
+]
