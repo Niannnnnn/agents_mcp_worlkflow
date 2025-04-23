@@ -205,7 +205,7 @@ async def run_agent_until_done(executor_agent, input_items, tasks=None):
 
 def parse_feedback_items(feedback):
     for idx, item in enumerate(feedback.new_items):
-        print(f"--- New Item {idx} ---")
+        
 
         # 专盯 New Item 1：包含 function_call_output 且含有 json 的 text
         if idx == 1 and isinstance(item.raw_item, dict):
@@ -218,15 +218,24 @@ def parse_feedback_items(feedback):
                 # 把嵌套的 JSON 字符串转成 dict
                 inner_data = json.loads(text_str)
                 
-                # 渲染输出
-                print(f"\n🧪 评估状态: {inner_data['status']}")
-                print(f"📝 总结信息: {inner_data['message']}")
+                # # 渲染输出
+                # print(f"--- New Item {idx} ---")
+                # print(f"🧪 评估状态: {inner_data['status']}")
+                # print(f"📝 总结信息: {inner_data['message']}")
+
+                # 将结果存入字典
+                result = {
+                    "status": inner_data.get("status", "未找到状态"),
+                    "message": inner_data.get("message", "未找到信息")
+                }
+                return result  # 直接返回结果并退出函数
 
             except Exception as e:
                 print("⚠️ 解析出错啦：", e)
-        # else:
-        #     print(item.raw_item)
-        #     print("\n")
+    
+    # 如果没有找到匹配的item
+    result["error"] = "未找到索引为1的有效项目"
+    return result
 
 async def chat(mcp_servers: list[MCPServer]):
     # 创建规划智能体
@@ -295,7 +304,7 @@ async def chat(mcp_servers: list[MCPServer]):
         "请使用/home/zhangfn/workflow/3rfm.pdb生成2个分子",
         "请执行vina模式的分子对接，使用/home/zhangfn/workflow/3rfm_mol.sdf作为配体，/home/zhangfn/workflow/3rfm.pdb作为受体",
         "请使用/home/zhangfn/test_file/3rfm_ligand_0_vina.pdbqt作为pred_file，/home/zhangfn/workflow/3rfm.pdb作为cond_file，vina作为dock_mode进行构象评估",
-        "请先使用/home/zhangfn/workflow/3rfm.pdb生成2个分子，再进行vina模式的分子对接，然后再进行构象评估",
+        "请先使用/home/zhangfn/workflow/3rfm.pdb生成4个分子，再进行分子对接，然后再进行构象评估",
         "请先使用/home/zhangfn/workflow/3rfm.pdb生成2个分子，再进行vina模式的分子对接，然后再进行构象评估。最后将结果文件下载到/home/zhangfn/test_download"
     ]
     
@@ -310,6 +319,8 @@ async def chat(mcp_servers: list[MCPServer]):
 
     while True:
         try:
+            if last_feedback is not None:
+                print(f"last_feedback : {last_feedback}")
             print("\n您可以输入需要执行的任务，或输入'help'查看帮助信息：")
             user_input = input("\033[95m💬 请输入您的指令：\033[0m ")
             
@@ -360,19 +371,12 @@ async def chat(mcp_servers: list[MCPServer]):
                 print("\n\033[93m正在分析执行结果...\033[0m")
                 feedback_input = [{"role": "user", "content": "feedback"}]
                 feedback = await Runner.run(reflection_agent, feedback_input)
-                last_feedback = feedback  # 保存反馈用于下一次规划
                 
                 # 显示反馈结果
                 print(f"\n\033[94m[执行反馈]:\033[0m")
-                # print(f"{feedback}")
+                last_feedback = parse_feedback_items(feedback)  # 保存反馈用于下一次规划
 
-                # print("\n🔍 Exploring new items:\n")
-                # for idx, item in enumerate(feedback.new_items):
-                #     print(f"--- New Item {idx} ---")
-                #     print(item.raw_item)
-                #     print("\n")
-
-                parse_feedback_items(feedback)
+                # print(f"last_feedback : {last_feedback}")
                 
             else:
                 # 如果无法创建计划，直接执行单次任务
