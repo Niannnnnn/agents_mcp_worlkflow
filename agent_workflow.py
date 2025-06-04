@@ -203,38 +203,114 @@ async def run_agent_until_done(executor_agent, input_items, tasks=None):
     # 返回所有结果的组合
     return results
 
-def parse_feedback_items(feedback):
-    for idx, item in enumerate(feedback.new_items):
+#DeepSeek-V2.5
+# def parse_feedback_items(feedback):
+#     for idx, item in enumerate(feedback.new_items):
         
 
-        # 专盯 New Item 1：包含 function_call_output 且含有 json 的 text
-        if idx == 1 and isinstance(item.raw_item, dict):
-            output_str = item.raw_item.get("output", "")
-            try:
-                # 提取 JSON 字符串里的 text
-                json_data = json.loads(output_str)
-                text_str = json_data.get("text", "")
+#         # 专盯 New Item 1：包含 function_call_output 且含有 json 的 text
+#         if idx == 1 and isinstance(item.raw_item, dict):
+#             output_str = item.raw_item.get("output", "")
+#             try:
+#                 # 提取 JSON 字符串里的 text
+#                 json_data = json.loads(output_str)
+#                 text_str = json_data.get("text", "")
                 
-                # 把嵌套的 JSON 字符串转成 dict
-                inner_data = json.loads(text_str)
+#                 # 把嵌套的 JSON 字符串转成 dict
+#                 inner_data = json.loads(text_str)
                 
-                # # 渲染输出
-                # print(f"--- New Item {idx} ---")
-                # print(f"🧪 评估状态: {inner_data['status']}")
-                # print(f"📝 总结信息: {inner_data['message']}")
+#                 # # 渲染输出
+#                 # print(f"--- New Item {idx} ---")
+#                 # print(f"🧪 评估状态: {inner_data['status']}")
+#                 # print(f"📝 总结信息: {inner_data['message']}")
 
-                # 将结果存入字典
-                result = {
-                    "status": inner_data.get("status", "未找到状态"),
-                    "message": inner_data.get("message", "未找到信息")
-                }
-                return result  # 直接返回结果并退出函数
+#                 # 将结果存入字典
+#                 result = {
+#                     "status": inner_data.get("status", "未找到状态"),
+#                     "message": inner_data.get("message", "未找到信息")
+#                 }
+#                 return result  # 直接返回结果并退出函数
 
-            except Exception as e:
-                print("⚠️ 解析出错啦：", e)
+#             except Exception as e:
+#                 print("⚠️ 解析出错啦：", e)
     
-    # 如果没有找到匹配的item
-    result["error"] = "未找到索引为1的有效项目"
+#     # 如果没有找到匹配的item
+#     result["error"] = "未找到索引为1的有效项目"
+#     return result
+
+#DeepSeek-V3
+def parse_feedback_items(feedback):
+    # Initialize result dictionary at the beginning
+    result = {"status": "未找到状态", "message": "未找到信息"}
+    
+    # Check if feedback has new_items attribute
+    if not hasattr(feedback, 'new_items') or not feedback.new_items:
+        result["error"] = "没有找到新的反馈项目"
+        return result
+    
+    # Loop through all new items looking for the relevant one
+    for idx, item in enumerate(feedback.new_items):
+        # Look for the text content in the DeepSeek-V3 output format
+        if hasattr(item, 'content') and item.content:
+            # Try to extract structured information from the text
+            try:
+                text_content = item.content
+                
+                # For DeepSeek-V3, we need to parse the text content to extract the analysis
+                if "binding energy" in text_content.lower():
+                    # Extract key information from the analysis text
+                    binding_energy_pass = "binding_energy_pass: true" in text_content.lower()
+                    posebusters_pass = "posebusters_pass: true" in text_content.lower()
+                    
+                    # If both passes are mentioned, extract the binding energy value if present
+                    binding_energy = None
+                    binding_energy_match = re.search(r"binding energy[^\d-]*(-?\d+\.?\d*)", text_content.lower())
+                    if binding_energy_match:
+                        binding_energy = float(binding_energy_match.group(1))
+                    
+                    # Create a structured result from the text analysis
+                    result = {
+                        "status": "success",
+                        "message": [{
+                            "binding_energy": binding_energy if binding_energy is not None else "未提取到值",
+                            "binding_energy_pass": "YES" if binding_energy_pass else "NO",
+                            "posebusters_pass": "YES" if posebusters_pass else "NO",
+                            "overall_pass": "YES" if (binding_energy_pass and posebusters_pass) else "NO"
+                        }]
+                    }
+                    return result
+                
+                # If we can't extract structured data, return the full text as the message
+                result["status"] = "success"
+                result["message"] = text_content
+                return result
+                
+            except Exception as e:
+                print(f"⚠️ 解析出错啦：{e}")
+                result["error"] = f"解析出错: {str(e)}"
+        
+        # Try the old format as a fallback
+        elif hasattr(item, 'raw_item') and isinstance(item.raw_item, dict):
+            try:
+                output_str = item.raw_item.get("output", "")
+                if output_str:
+                    # Try to parse as JSON
+                    json_data = json.loads(output_str)
+                    text_str = json_data.get("text", "")
+                    
+                    # Parse nested JSON
+                    if text_str:
+                        inner_data = json.loads(text_str)
+                        result = {
+                            "status": inner_data.get("status", "未找到状态"),
+                            "message": inner_data.get("message", "未找到信息")
+                        }
+                        return result
+            except Exception as e:
+                print(f"⚠️ 尝试旧格式解析出错：{e}")
+    
+    # If no valid item was found
+    result["error"] = "未找到有效的反馈内容"
     return result
 
 async def chat(mcp_servers: list[MCPServer]):
@@ -304,8 +380,8 @@ async def chat(mcp_servers: list[MCPServer]):
         "请使用/home/zhangfn/workflow/3rfm.pdb生成2个分子",
         "请执行vina模式的分子对接，使用/home/zhangfn/workflow/3rfm_mol.sdf作为配体，/home/zhangfn/workflow/3rfm.pdb作为受体",
         "请使用/home/zhangfn/test_file/3rfm_ligand_0_vina.pdbqt作为pred_file，/home/zhangfn/workflow/3rfm.pdb作为cond_file，vina作为dock_mode进行构象评估",
-        "请先使用/home/zhangfn/workflow/3rfm.pdb生成4个分子，再进行分子对接，然后再进行构象评估",
-        "请先使用/home/zhangfn/workflow/3rfm.pdb生成2个分子，再进行vina模式的分子对接，然后再进行构象评估。最后将结果文件下载到/home/zhangfn/test_download"
+        "请先使用/home/zhangfn/workflow/3rfm.pdb生成5个分子，再进行分子对接，然后再进行构象评估",
+        "请先使用/home/zhangfn/workflow/3rfm.pdb生成5个分子，再进行vina模式的分子对接，然后再进行构象评估。最后将结果文件下载到/home/zhangfn/test_download"
     ]
     
     # 打印带颜色的示例
@@ -317,12 +393,41 @@ async def chat(mcp_servers: list[MCPServer]):
     # 保存上一次反馈，用于改进后续规划
     last_feedback = None
 
-    while True:
-        try:
+    for round_num in range(2):
+        try:        
+            print(f"\n====== 第{round_num+1}轮操作 ======")
+            print("您可以输入需要执行的任务，或输入'help'查看帮助信息：")
+            
+            # 根据上一轮反馈自动生成提示词
             if last_feedback is not None:
+                print(f"\n\033[94m[上一轮的执行反馈]:\033[0m")
                 print(f"last_feedback : {last_feedback}")
-            print("\n您可以输入需要执行的任务，或输入'help'查看帮助信息：")
-            user_input = input("\033[95m💬 请输入您的指令：\033[0m ")
+                
+                # 检查是否有至少一个分子的overall_pass为YES
+                has_passed_molecule = False
+                
+                if 'message' in last_feedback and isinstance(last_feedback['message'], list):
+                    for molecule in last_feedback['message']:
+                        if molecule.get('overall_pass') == 'YES':
+                            has_passed_molecule = True
+                            break
+                
+                if has_passed_molecule:
+                    # 自动进入"参考最佳配体进行新一轮分子生成、对接、评估"
+                    # 使用"best_ref_ligand_sdf"参数，让系统自动使用最佳参考配体（n_samples=20）
+                    print(f"\033[92m检测到至少一个通过评估的分子，将自动使用最佳配体进行下一轮优化\033[0m")
+                    user_input = "请使用uploaded_pdb作为受体（即pdb_file参数的值为uploaded_pdb这个字段，不必过度解读），使用best_ref_ligand_sdf作为参考配体生成20个分子（即ref_ligand参数的值为best_ref_ligand_sdf这个字段，不必过度解读），然后执行分子对接，最后进行构象评估。最后将结果文件下载到/home/zhangfn/test_download"
+                else:
+                    # 自动进入"进行新一轮分子生成（n_samples=100）、对接、评估"
+                    print("\033[93m未检测到通过评估的分子，将自动进行新一轮扩大样本量的分子生成\033[0m")
+                    user_input = "请使用uploaded_pdb作为受体（即pdb_file参数的值为uploaded_pdb这个字段，不必过度解读）生成100个分子，再进行分子对接，然后进行构象评估"
+            else:
+                # 如果没有上一轮反馈，请求用户输入
+                user_input = input("\033[95m💬 请输入您的指令：\033[0m ")
+            
+            # 在这里输出实际使用的指令，便于用户了解系统正在执行什么
+            if last_feedback is not None:
+                print(f"\033[95m💬 系统自动生成的指令：{user_input}\033[0m")
             
             # 处理特殊命令
             if user_input.lower() in ["exit", "quit"]:
@@ -367,16 +472,19 @@ async def chat(mcp_servers: list[MCPServer]):
                     print(f"\n\033[94m[任务 {result['task_id']}] {result['description']}:\033[0m")
                     print(f"{result['result']}")
 
-                # 使用反馈智能体分析结果 - 不再传入执行结果，让它直接调用API
-                print("\n\033[93m正在分析执行结果...\033[0m")
-                feedback_input = [{"role": "user", "content": "feedback"}]
-                feedback = await Runner.run(reflection_agent, feedback_input)
-                
-                # 显示反馈结果
-                print(f"\n\033[94m[执行反馈]:\033[0m")
-                last_feedback = parse_feedback_items(feedback)  # 保存反馈用于下一次规划
+                if round_num == 0:  # 只在第一轮(索引为0)结束时执行
+                    # 使用反馈智能体分析结果 - 不再传入执行结果，让它直接调用API
+                    print("\n\033[93m正在分析执行结果...\033[0m")
+                    feedback_input = [{"role": "user", "content": "feedback"}]
+                    feedback = await Runner.run(reflection_agent, feedback_input)
 
-                # print(f"last_feedback : {last_feedback}")
+                    print(feedback)
+                    
+                    last_feedback = None
+                    last_feedback = parse_feedback_items(feedback)  # 保存反馈用于下一次规划
+                else:
+                    # 第二轮结束时的处理
+                    print("\n\033[92m✅ 所有操作已完成。\033[0m")
                 
             else:
                 # 如果无法创建计划，直接执行单次任务
